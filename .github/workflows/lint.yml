@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint, type-check, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Add uv to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache uv package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
+      - name: Install project dependencies (frozen)
+        run: uv sync --frozen
+
+      - name: Lint — ruff check
+        run: uv run ruff check .
+
+      - name: Lint — ruff format check
+        run: uv run ruff format --check .
+
+      - name: Type-check — mypy
+        run: uv run mypy temporal/
+
+      - name: Test — pytest
+        run: uv run pytest tests/ -v
