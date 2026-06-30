@@ -1,0 +1,15 @@
+{
+  "title": "ZTP Pipeline Latency",
+  "uid": "ztp-pipeline-latency",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Activity Latency by Type",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "targets": [{"expr": "histogram_quantile(0.95, rate(temporal_activity_execution_latency_seconds_bucket[5m]))", "legendFormat": "P95"}]
+    }
+  ],
+  "time": {"from": "now-3h", "to": "now"},
+  "refresh": "60s"
+}

@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: ZTP Dashboards
+    folder: Network ZTP
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

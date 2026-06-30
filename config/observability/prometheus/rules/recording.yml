@@ -1,0 +1,18 @@
+groups:
+  - name: ztp.recording
+    interval: 30s
+    rules:
+      - record: job:ztp_workflow_success_rate:5m
+        expr: |
+          rate(ztp_workflow_completed_total{status="success"}[5m])
+          / rate(ztp_workflow_completed_total[5m])
+      - record: job:ztp_activity_latency_p95:5m
+        expr: |
+          histogram_quantile(0.95,
+            rate(temporal_activity_execution_latency_seconds_bucket[5m]))
+      - record: job:ztp_drift_rate:1h
+        expr: rate(ztp_drift_detected_total[1h])
+      - record: job:ztp_onboarding_failure_rate:1h
+        expr: |
+          rate(ztp_onboarding_sites_total{status="failed"}[1h])
+          / rate(ztp_onboarding_sites_total[1h])

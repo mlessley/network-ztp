@@ -1,0 +1,28 @@
+{
+  "title": "ZTP Worker Overview",
+  "uid": "ztp-worker-overview",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Workflow Completion Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "rate(ztp_workflow_completed_total[5m])", "legendFormat": "{{phase}} {{status}}"}]
+    },
+    {
+      "type": "stat",
+      "title": "HITL Pending",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "ztp_hitl_pending_total"}],
+      "options": {"thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Activity Latency P95",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{"expr": "job:ztp_activity_latency_p95:5m", "legendFormat": "P95"}]
+    }
+  ],
+  "time": {"from": "now-1h", "to": "now"},
+  "refresh": "30s"
+}

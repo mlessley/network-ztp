@@ -1,0 +1,21 @@
+{
+  "title": "ZTP Compliance Health",
+  "uid": "ztp-compliance",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Drift Detection Rate",
+      "gridPos": {"h": 8, "w": 16, "x": 0, "y": 0},
+      "targets": [{"expr": "job:ztp_drift_rate:1h", "legendFormat": "Drift/hour"}]
+    },
+    {
+      "type": "stat",
+      "title": "Drift Events (1h)",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "targets": [{"expr": "increase(ztp_drift_detected_total[1h])"}]
+    }
+  ],
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "60s"
+}

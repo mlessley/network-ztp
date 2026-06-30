@@ -1,0 +1,22 @@
+{
+  "title": "ZTP Onboarding Progress",
+  "uid": "ztp-onboarding",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "bargauge",
+      "title": "Sites by State",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "ztp_onboarding_sites_total", "legendFormat": "{{status}}"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Onboarding Failure Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"expr": "job:ztp_onboarding_failure_rate:1h", "legendFormat": "Failure rate"}],
+      "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "red", "value": 0.05}]}}}
+    }
+  ],
+  "time": {"from": "now-12h", "to": "now"},
+  "refresh": "60s"
+}

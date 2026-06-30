@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+
+rule_files:
+  - rules/recording.yml
+  - rules/alerting.yml
+
+scrape_configs:
+  - job_name: ztp-worker
+    static_configs:
+      - targets: ["ztp-worker:9091"]
+  - job_name: ztp-api
+    static_configs:
+      - targets: ["ztp-api:9090"]
+  - job_name: temporal
+    static_configs:
+      - targets: ["temporal:9090"]

@@ -1,0 +1,42 @@
+groups:
+  - name: ztp.alerts
+    rules:
+      - alert: ZTPWorkerDown
+        expr: up{job="ztp-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ZTP worker scrape target gone"
+
+      - alert: ZTPHighFailureRate
+        expr: job:ztp_workflow_success_rate:5m < 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ZTP workflow success rate below 95%"
+
+      - alert: ZTPHITLStalePending
+        expr: ztp_hitl_pending_total > 0
+        for: 4h
+        labels:
+          severity: warning
+        annotations:
+          summary: "HITL approval pending for over 4 hours"
+
+      - alert: ZTPComplianceDriftSpiking
+        expr: job:ztp_drift_rate:1h > 10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Compliance drift rate exceeding 10 devices/hour"
+
+      - alert: ZTPOnboardingFailureRate
+        expr: job:ztp_onboarding_failure_rate:1h > 0.05
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Onboarding failure rate above 5% — consider pausing the batch"
