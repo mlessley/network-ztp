@@ -16,3 +16,6 @@ __pycache__/
 
 # Editor
 .vscode/
+
+# Claude Code local overrides (settings.json is committed; local.json is machine-specific)
+.claude/settings.local.json

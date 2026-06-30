@@ -5,18 +5,27 @@ description = "Zero-touch provisioning automation for enterprise network deploym
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "httpx>=0.28.1",
+    "ansible-runner>=2.4.3",
+    "httpx2>=2.5.0",
     "jinja2>=3.1.6",
+    "napalm>=5.1.0",
+    "netmiko>=4.7.0",
     "pydantic>=2.13.4",
+    "pynautobot>=3.1.0",
     "python-dotenv>=1.2.2",
+    "rich>=15.0.0",
+    "structlog>=26.1.0",
     "temporalio>=1.29.0",
+    "tenacity>=9.1.4",
 ]
 
 [dependency-groups]
 dev = [
+    "freezegun>=1.5.5",
     "mypy>=2.1.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
     "ruff>=0.15.20",
 ]
 

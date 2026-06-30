@@ -1,62 +1,55 @@
 """
 Day 0 bootstrap activities.
 
-Responsibilities:
-  1. register_dhcp_reservation  — pre-create a DHCP reservation for the device's
-                                   MAC address so the first DHCP Discover gets the
-                                   right IP and Option 67 bootstrap URL.
-  2. render_bootstrap_script    — Jinja2-render a Cisco IOS-XE ZTP Python script
-                                   from the DeviceIntent.  The script is what the
-                                   device actually executes on first boot.
-  3. publish_bootstrap_script   — write the rendered script to the HTTP directory
-                                   served by the bootstrap file server.
-  4. wait_for_device_reachability — poll until the device's management IP responds
-                                    to SSH, signalling that the bootstrap script ran
-                                    successfully and Day 1 can begin.
+Sequence:
+  1. register_dhcp_reservation  — pre-create a MAC reservation so the device's
+                                   first DHCP Discover gets the right IP + Option 67.
+  2. render_bootstrap_script    — Jinja2-render a minimal IOS-XE ZTP Python script.
+  3. publish_bootstrap_script   — write the script to the HTTP file server directory.
+  4. wait_for_device_reachability — poll SSH port 22 until the device checks in.
 
 Bootstrap flow on the device side (Cisco IOS-XE ZTP):
-  1. Device boots with factory defaults, no config.
+  1. Device boots with factory defaults (no config).
   2. Sends DHCP Discover on all interfaces.
-  3. DHCP server matches the reserved MAC, returns a short-lease IP + Option 67
-     pointing at the bootstrap HTTP server URL.
+  3. DHCP returns reserved IP + Option 67 URL.
   4. IOS-XE fetches the Python script from the URL.
-  5. IOS-XE executes the script using its built-in ``cli`` module.
+  5. IOS-XE executes it via its built-in Python + ``cli`` module.
   6. Script applies minimal config: hostname, mgmt IP, default route, SSH.
-  7. Device saves config and becomes reachable — triggers Day 1.
+  7. Device saves and becomes reachable → Day 1 begins.
+
+Reachability polling uses tenacity for fine-grained control over the retry
+interval and jitter. The Temporal activity-level timeout (8 hours, set in the
+workflow) is the outer bound; tenacity manages the inner polling cadence.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import textwrap
 from datetime import UTC, datetime
 
+import structlog
 from jinja2 import BaseLoader, Environment, StrictUndefined
 from temporalio import activity
+from tenacity import retry, stop_after_delay, wait_fixed
 
 from temporal.models import BootstrapScript, DeviceIntent, DhcpReservation
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
 BOOTSTRAP_SERVER_URL = os.getenv("BOOTSTRAP_SERVER_URL", "http://bootstrap.corp.example.com")
 BOOTSTRAP_SERVE_DIR = os.getenv("BOOTSTRAP_SERVE_DIR", "/opt/bootstrap/scripts")
 DHCP_API_URL = os.getenv("DHCP_API_URL", "http://localhost:8081")
 
+# Flip to False (or set ZTP_USE_MOCK=false) to call real APIs.
+_USE_MOCK: bool = os.getenv("ZTP_USE_MOCK", "true").lower() != "false"
+
 # ---------------------------------------------------------------------------
 # IOS-XE ZTP Python script template
 #
-# This is the actual script format Cisco IOS-XE executes on first boot via
-# its built-in Python 3 interpreter and ``cli`` module.  It applies only the
-# configuration needed to bring the management plane up — full Day 1 intent
-# is delivered separately by Ansible once the device is reachable.
-#
-# Key constraints:
-#   - Only the ``cli`` module is available (no pip, no stdlib networking).
-#   - ``cli.configure()`` accepts a list of IOS config lines.
-#   - ``cli.execute()`` runs exec-mode commands.
-#   - The script runs as a privileged process; no authentication needed.
+# Executed on the device by its built-in Python 3 + ``cli`` module on first
+# boot.  Only the ``cli`` module is available — no pip, no stdlib networking.
 # ---------------------------------------------------------------------------
 _ZTP_SCRIPT_TEMPLATE = textwrap.dedent("""\
     #!/usr/bin/env python3
@@ -87,10 +80,9 @@ _ZTP_SCRIPT_TEMPLATE = textwrap.dedent("""\
         ])
 
     def configure_ssh() -> None:
-        \"\"\"Enable SSH access for Day 1 Ansible connection.\"\"\"
-        # Generate RSA key — required before ssh can be enabled.
+        \"\"\"Enable SSH for Day 1 Ansible connection.\"\"\"
         cli.execute("crypto key generate rsa modulus 2048")
-        time.sleep(2)  # Key generation is synchronous but takes a moment
+        time.sleep(2)
         cli.configure([
             "ip ssh version 2",
             "ip ssh time-out 60",
@@ -106,7 +98,6 @@ _ZTP_SCRIPT_TEMPLATE = textwrap.dedent("""\
     def save_config() -> None:
         cli.execute("write memory")
 
-    # Entry point — IOS-XE calls the module at import time.
     configure_management()
     configure_ssh()
     save_config()
@@ -117,7 +108,7 @@ _JINJA_ENV = Environment(loader=BaseLoader(), undefined=StrictUndefined, keep_tr
 
 
 def _ip_to_ios(cidr: str) -> str:
-    """Convert '10.1.1.1/30' to '10.1.1.1 255.255.255.252' for IOS syntax."""
+    """'10.1.1.1/30' → '10.1.1.1 255.255.255.252'"""
     if not cidr or "/" not in cidr:
         return cidr
     host, prefix = cidr.split("/")
@@ -135,27 +126,17 @@ async def register_dhcp_reservation(
     mac_address: str, device_id: str, hostname: str
 ) -> DhcpReservation:
     """
-    Pre-create a DHCP reservation so the device's first Discover gets the
-    right management IP and the Option 67 bootstrap script URL.
+    Pre-create a DHCP host reservation keyed on MAC address.
 
-    In production this calls the DHCP server's management API (ISC DHCP /
-    Kea / Infoblox) to create a host reservation keyed on the MAC address.
-    The reservation includes:
-      - ``fixed-address``: the management IP from Nautobot
-      - ``option bootfile-name`` (67): URL of the per-device ZTP script
-      - A short lease time (1 hour) — enough for bootstrap, prevents long-term
-        squatting on the management IP pool before Day 1 assigns the final address.
+    The reservation sets:
+      - fixed-address: the management IP from Nautobot
+      - option bootfile-name (67): the per-device ZTP script URL
+      - lease time: 1 hour (enough for bootstrap; prevents long-term pool squatting)
 
-    Args:
-        mac_address: Factory MAC of the device's management port.
-        device_id:   Nautobot device UUID.
-        hostname:    Device hostname (used to construct the script URL).
-
-    Returns:
-        DhcpReservation record confirming what was registered.
+    In production this POSTs to the DHCP server's management API
+    (ISC DHCP, Kea, or Infoblox REST).
     """
     script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{device_id}.py"
-
     dhcp_payload = {
         "mac": mac_address,
         "hostname": hostname,
@@ -163,25 +144,34 @@ async def register_dhcp_reservation(
         "lease_time": 3600,
     }
 
-    activity.logger.info(
-        "[MOCK] Registering DHCP reservation: mac=%s device_id=%s url=%s",
-        mac_address,
-        device_id,
-        script_url,
-    )
-    activity.logger.info(
-        "[MOCK] Would POST %s/api/reservations with payload: %s",
-        DHCP_API_URL,
-        dhcp_payload,
+    log.info(
+        "register_dhcp_reservation.started",
+        mac_address=mac_address,
+        device_id=device_id,
+        script_url=script_url,
     )
 
-    # Derive the assigned IP from the Nautobot primary_ip (available in
-    # DeviceIntent; passed here as separate args to keep the activity signature
-    # simple and independently retryable).
+    if _USE_MOCK:
+        log.debug(
+            "register_dhcp_reservation.mock",
+            dhcp_api=f"{DHCP_API_URL}/api/reservations",
+            payload=dhcp_payload,
+        )
+    else:
+        import httpx2 as httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{DHCP_API_URL}/api/reservations",
+                json=dhcp_payload,
+            )
+            response.raise_for_status()
+
+    log.info("register_dhcp_reservation.complete", device_id=device_id, mac_address=mac_address)
     return DhcpReservation(
         device_id=device_id,
         mac_address=mac_address,
-        assigned_ip="10.100.255.1",  # In production: resolved from Nautobot
+        assigned_ip="10.100.255.1",
         lease_seconds=3600,
     )
 
@@ -191,40 +181,30 @@ async def render_bootstrap_script(intent: DeviceIntent) -> BootstrapScript:
     """
     Render the IOS-XE ZTP Python script from a DeviceIntent.
 
-    The rendered script contains only the management-plane configuration.
-    It is intentionally minimal — full intent delivery is Day 1's job.
-
-    Args:
-        intent: Device desired state from Nautobot.
-
-    Returns:
-        BootstrapScript with the rendered Python script text and its URL.
+    Fails fast if default_gateway is missing — the device cannot bootstrap
+    without a default route to reach the management network.
     """
-    activity.logger.info(
-        "Rendering ZTP bootstrap script: device_id=%s hostname=%s",
-        intent.device_id,
-        intent.hostname,
+    log.info(
+        "render_bootstrap_script.started",
+        device_id=intent.device_id,
+        hostname=intent.hostname,
     )
 
     if not intent.default_gateway:
         raise ValueError(
-            f"device_id={intent.device_id} has no default_gateway in Nautobot config context — "
-            "required for bootstrap script"
+            f"device_id={intent.device_id} has no default_gateway in Nautobot config context"
         )
 
+    rendered_at = datetime.now(tz=UTC).isoformat()
     template = _JINJA_ENV.from_string(_ZTP_SCRIPT_TEMPLATE)
-    script_text = template.render(
-        intent=intent,
-        rendered_at=datetime.now(tz=UTC).isoformat(),
-    )
-
+    script_text = template.render(intent=intent, rendered_at=rendered_at)
     script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{intent.device_id}.py"
 
-    activity.logger.info(
-        "Bootstrap script rendered: device_id=%s lines=%d url=%s",
-        intent.device_id,
-        script_text.count("\n"),
-        script_url,
+    log.info(
+        "render_bootstrap_script.complete",
+        device_id=intent.device_id,
+        lines=script_text.count("\n"),
+        url=script_url,
     )
 
     return BootstrapScript(
@@ -239,26 +219,29 @@ async def publish_bootstrap_script(script: BootstrapScript) -> None:
     """
     Write the bootstrap script to the HTTP file server directory.
 
-    In production this writes to a path served by nginx/Apache, or uploads
-    to an S3 bucket with a pre-signed URL.  The script must be accessible at
-    ``script.script_url`` before the device boots and sends its DHCP Discover.
-
-    Args:
-        script: Rendered bootstrap script to publish.
+    In production this writes to an nginx-served path or uploads to S3.
+    The script must be accessible at script.script_url before the device boots.
     """
     script_path = f"{BOOTSTRAP_SERVE_DIR}/{script.device_id}.py"
 
-    activity.logger.info(
-        "[MOCK] Publishing bootstrap script: device_id=%s path=%s url=%s",
-        script.device_id,
-        script_path,
-        script.script_url,
+    log.info(
+        "publish_bootstrap_script.started",
+        device_id=script.device_id,
+        path=script_path,
+        url=script.script_url,
     )
-    activity.logger.info(
-        "[MOCK] Script content preview (first 3 lines):\n%s",
-        "\n".join(script.script_content.splitlines()[:3]),
-    )
-    # In production: write script.script_content to script_path on the file server
+
+    if _USE_MOCK:
+        log.debug(
+            "publish_bootstrap_script.mock",
+            preview="\n".join(script.script_content.splitlines()[:3]),
+        )
+    else:
+        # In production: write to the file server path or upload to object storage.
+        with open(script_path, "w") as fh:
+            fh.write(script.script_content)
+
+    log.info("publish_bootstrap_script.complete", device_id=script.device_id)
 
 
 @activity.defn
@@ -266,37 +249,50 @@ async def wait_for_device_reachability(device_id: str, management_ip: str) -> bo
     """
     Poll until the device's management IP accepts SSH connections.
 
-    This activity has a deliberately long start_to_close_timeout (set in the
-    workflow) because it may wait hours for a field engineer to physically rack
-    and cable the device.  The polling interval is short so the workflow
-    proceeds quickly once the device does check in.
+    Uses tenacity for the inner retry loop (30-second poll interval with
+    fixed wait).  The outer bound is the Temporal activity start_to_close_timeout
+    (8 hours, set in the workflow) — Temporal cancels the activity if that
+    expires, which propagates as a failure to the workflow.
 
-    In production this would attempt a paramiko/asyncssh TCP connect to port 22
-    on ``management_ip`` and return True on first success.
-
-    Args:
-        device_id:      Nautobot device UUID (for logging).
-        management_ip:  IP address (without prefix length) to poll.
-
-    Returns:
-        True when the device is reachable.
+    In production: attempts asyncio TCP connect to port 22.  The first
+    successful connect means the bootstrap script ran and SSH is up.
     """
-    activity.logger.info(
-        "Waiting for device reachability: device_id=%s management_ip=%s",
-        device_id,
-        management_ip,
-    )
-    activity.logger.info(
-        "[MOCK] Would poll SSH port 22 at %s every 30s until reachable",
-        management_ip,
+    log.info(
+        "wait_for_device_reachability.started",
+        device_id=device_id,
+        management_ip=management_ip,
     )
 
-    # Simulate the bootstrap script running and the device coming up.
-    await asyncio.sleep(2)
+    if _USE_MOCK:
+        log.debug(
+            "wait_for_device_reachability.mock",
+            poll="SSH port 22 every 30s until reachable",
+        )
+        await asyncio.sleep(2)
+        log.info("wait_for_device_reachability.online", device_id=device_id)
+        return True
 
-    activity.logger.info(
-        "Device is reachable: device_id=%s management_ip=%s",
-        device_id,
-        management_ip,
-    )
+    # Production: tenacity wraps the SSH probe.
+    # stop_after_delay is a safety net — the Temporal 8h timeout is the real bound.
+    _ssh_probe_with_retry = retry(
+        stop=stop_after_delay(8 * 3600),
+        wait=wait_fixed(30),
+        reraise=True,
+        before_sleep=lambda rs: log.debug(
+            "wait_for_device_reachability.retry",
+            device_id=device_id,
+            attempt=rs.attempt_number,
+        ),
+    )(_probe_ssh)
+
+    await asyncio.to_thread(_ssh_probe_with_retry, management_ip)
+    log.info("wait_for_device_reachability.online", device_id=device_id)
     return True
+
+
+def _probe_ssh(host: str, port: int = 22, timeout: float = 5.0) -> None:
+    """Attempt a TCP connect to host:port.  Raises OSError on failure."""
+    import socket
+
+    with socket.create_connection((host, port), timeout=timeout):
+        pass

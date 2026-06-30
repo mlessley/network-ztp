@@ -1,0 +1,70 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv *)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git add *)",
+      "Bash(git commit*)",
+      "Bash(git remote*)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls*)",
+      "Bash(cat *)",
+      "Bash(mkdir *)",
+      "Bash(chmod *)",
+      "Bash(sed *)",
+      "Bash(echo *)",
+      "Bash(python3 *)",
+      "Read(**)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git push -f)",
+      "Bash(cat .env*)",
+      "Bash(cat *secret*)",
+      "Bash(cat *credential*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(*secret*)",
+      "Read(*credential*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/pre_bash.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post_write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post_write.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
