@@ -23,3 +23,24 @@ def require_role(*roles: UserRole) -> Any:
         return user
 
     return Depends(_check)
+
+
+async def require_region_access(
+    resource_id: str,
+    resource_type: str = "device",
+    user: UserContext = Depends(get_current_user),  # noqa: B008
+) -> None:
+    from api.config import get_settings
+
+    settings = get_settings()
+    if user.role == UserRole.ADMIN:
+        return
+    # Mock mode: all resources resolve to default_region
+    # Live mode: query Nautobot for device/site region
+    resource_region = settings.default_region
+    if resource_region not in user.regions:
+        raise HTTPException(
+            403,
+            detail=f"Resource {resource_id} is in region {resource_region}; "
+            f"your access covers {user.regions}",
+        )

@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from temporalio.client import Client
 
-from api.deps import get_temporal_client
+from api.deps import get_current_user, get_temporal_client
+from api.schemas.auth import UserContext
 
 router = APIRouter(tags=["health"])
 
@@ -22,3 +23,8 @@ async def readiness(temporal: Client = Depends(get_temporal_client)) -> dict[str
         return {"status": "ready"}
     except Exception as exc:
         raise HTTPException(503, detail=f"Temporal unreachable: {exc}") from exc
+
+
+@router.get("/health/me")
+async def whoami(user: UserContext = Depends(get_current_user)) -> dict[str, object]:  # noqa: B008
+    return {"username": user.username, "role": user.role, "regions": user.regions}

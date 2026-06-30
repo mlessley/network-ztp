@@ -9,6 +9,7 @@ from temporalio.client import Client
 
 from api.config import Settings
 from api.errors import register_error_handlers
+from api.middleware.identity import IdentityMiddleware
 from api.middleware.observability import ObservabilityMiddleware
 
 
@@ -43,10 +44,18 @@ def create_app(
     app.state.settings = _settings
 
     app.add_middleware(ObservabilityMiddleware)
+    # IdentityMiddleware runs inner (added after ObservabilityMiddleware) so
+    # request.state.user is available to all route handlers.
+    app.add_middleware(IdentityMiddleware, settings=_settings)
 
-    from api.endpoints import health
+    from api.endpoints import devices, health, onboarding, sites, webhooks, workflows
 
     app.include_router(health.router)
+    app.include_router(devices.router, prefix="/v1")
+    app.include_router(sites.router, prefix="/v1")
+    app.include_router(webhooks.router, prefix="/v1")
+    app.include_router(workflows.router, prefix="/v1")
+    app.include_router(onboarding.router, prefix="/v1")
 
     register_error_handlers(app)
     return app
