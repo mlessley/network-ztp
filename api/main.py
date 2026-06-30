@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from prometheus_client import make_asgi_app as _make_metrics_asgi_app
 from temporalio.client import Client
 
 from api.config import Settings
@@ -77,5 +78,7 @@ def create_app(
 
     if _settings.otlp_endpoint:
         _setup_tracing("ztp-api", _settings.otlp_endpoint)
+
+    app.mount("/metrics", _make_metrics_asgi_app())
 
     return app

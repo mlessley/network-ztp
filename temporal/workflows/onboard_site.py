@@ -148,7 +148,7 @@ class OnboardSiteWorkflow:
                 push_config,
                 args=[rendered],
                 start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=5)),
+                retry_policy=_RETRY,
             )
 
         await workflow.execute_activity(

@@ -63,10 +63,8 @@ services:
     environment:
       TEMPORAL_HOST: temporal:7233
       OTLP_ENDPOINT: http://tempo:4317
-      METRICS_PORT: "9090"
     ports:
       - "8000:8000"
-      - "9090:9090"
 
   prometheus:
     image: prom/prometheus:v2.55.0

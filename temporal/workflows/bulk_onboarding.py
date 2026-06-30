@@ -56,7 +56,6 @@ class BulkOnboardingWorkflow:
         self._max_concurrent = inp.max_concurrent
         self._counts["pending"] = len(inp.site_ids)
 
-        sleep_seconds = 3600.0 / max(self._sites_per_hour, 1)
         pending = list(inp.site_ids)
         in_flight: list[Any] = []
 
@@ -64,6 +63,7 @@ class BulkOnboardingWorkflow:
             await workflow.wait_condition(lambda: not self._paused)
 
             while pending and len(in_flight) < self._max_concurrent:
+                sleep_seconds = 3600.0 / max(self._sites_per_hour, 1)
                 site_id = pending.pop(0)
                 self._counts["pending"] -= 1
                 self._counts["in_flight"] += 1

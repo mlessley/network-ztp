@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,19 +27,24 @@ async def start_bulk_onboarding(
     from temporal.workflows.bulk_onboarding import BulkOnboardingWorkflow
 
     s = get_settings()
-    wf_id = f"onboard-bulk-{body.requested_by}-{int(time.time())}"
-    handle = await temporal.start_workflow(
-        BulkOnboardingWorkflow.run,
-        BulkOnboardingInput(
-            site_ids=body.site_ids,
-            sites_per_hour=body.sites_per_hour,
-            max_concurrent=body.max_concurrent,
-            requested_by=body.requested_by,
-            region=s.default_region,
-        ),
-        id=wf_id,
-        task_queue="ztp-queue",
-    )
+    wf_id = f"onboard-bulk-{body.requested_by}"
+    try:
+        handle = await temporal.start_workflow(
+            BulkOnboardingWorkflow.run,
+            BulkOnboardingInput(
+                site_ids=body.site_ids,
+                sites_per_hour=body.sites_per_hour,
+                max_concurrent=body.max_concurrent,
+                requested_by=body.requested_by,
+                region=s.default_region,
+            ),
+            id=wf_id,
+            task_queue="ztp-queue",
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Bulk onboarding already running for {body.requested_by}"
+        ) from exc
     return WorkflowSubmitted(workflow_id=handle.id, status_url=f"/v1/workflows/{handle.id}")
 
 
@@ -69,13 +73,14 @@ async def onboard_single_site(
 
 @router.get("/onboarding/status")
 async def get_onboarding_status(
+    requested_by: str,
     _auth: UserContext = require_role(  # noqa: B008
         UserRole.NOC_OPERATOR, UserRole.ENGINEER, UserRole.ADMIN
     ),
     temporal: Client = Depends(get_temporal_client),  # noqa: B008
 ) -> OnboardingStatus:
     try:
-        handle = temporal.get_workflow_handle("onboard-bulk-latest")
+        handle = temporal.get_workflow_handle(f"onboard-bulk-{requested_by}")
         status: dict[str, Any] = await handle.query(BulkOnboardingWorkflow.get_status)
         return OnboardingStatus(
             pending=int(status.get("pending", 0)),

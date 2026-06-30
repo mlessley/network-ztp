@@ -10,8 +10,9 @@ scrape_configs:
     static_configs:
       - targets: ["ztp-worker:9091"]
   - job_name: ztp-api
+    metrics_path: /metrics
     static_configs:
-      - targets: ["ztp-api:9090"]
+      - targets: ["ztp-api:8000"]
   - job_name: temporal
     static_configs:
       - targets: ["temporal:9090"]

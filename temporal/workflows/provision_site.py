@@ -253,7 +253,7 @@ class ProvisionSiteWorkflow:
                 device_id, ProvisioningStatus.AWAITING_HUMAN_APPROVAL, workflow_id
             )
 
-            drift_detected.labels(site_id=device_id).inc()
+            drift_detected.labels(site_id=f"device:{device_id}").inc()
             hitl_pending.inc()
             # Park here until a signal arrives or the 24-hour SLA expires.
             # wait_condition returns True if condition met, False on timeout.

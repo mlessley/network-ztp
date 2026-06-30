@@ -16,6 +16,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
 
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
+        request.state.trace_id = request_id  # alias for error handlers
 
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
