@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +61,13 @@ class ProvisioningStatus(StrEnum):
     COMPLIANCE_SCAN_STARTED = "COMPLIANCE_SCAN_STARTED"
     COMPLIANCE_PASSED = "COMPLIANCE_PASSED"
     COMPLIANCE_DRIFTED = "COMPLIANCE_DRIFTED"
+
+    # Day 0.5 — site onboarding
+    ONBOARD_PENDING = "ONBOARD_PENDING"
+    ONBOARD_DISCOVERING = "ONBOARD_DISCOVERING"
+    ONBOARD_DISCOVERED = "ONBOARD_DISCOVERED"
+    ONBOARD_RECONCILING = "ONBOARD_RECONCILING"
+    ONBOARD_MANAGED = "ONBOARD_MANAGED"
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +288,54 @@ class ComplianceScanResult(BaseModel):
     drifted_count: int
     drifted_devices: list[DeviceComplianceResult] = Field(default_factory=list)
     scanned_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+# ---------------------------------------------------------------------------
+# Day 0.5 models — site onboarding
+# ---------------------------------------------------------------------------
+
+
+class ConfigChange(BaseModel):
+    section: str
+    description: str
+    current: str
+    intended: str
+
+
+class RemediationPlan(BaseModel):
+    site_id: str
+    device_id: str
+    snapshot_id: str
+    changes: list[ConfigChange]
+    estimated_impact: Literal["low", "medium", "high"]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class OnboardSiteInput(BaseModel):
+    site_id: str
+    device_id: str
+    requested_by: str
+
+
+class OnboardSiteResult(BaseModel):
+    site_id: str
+    device_id: str
+    success: bool
+    workflow_id: str
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    failure_reason: str = Field(default="")
+
+
+class BulkOnboardingInput(BaseModel):
+    site_ids: list[str]
+    sites_per_hour: int = Field(default=50, ge=1, le=500)
+    max_concurrent: int = Field(default=10, ge=1, le=50)
+    requested_by: str
+    region: str = Field(default="SOUTH")
+
+
+class BulkOnboardingResult(BaseModel):
+    total_sites: int
+    managed_count: int
+    failed_count: int
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))

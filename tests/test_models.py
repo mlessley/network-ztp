@@ -102,3 +102,39 @@ class TestProvisionSiteResult:
         )
         assert not r.success
         assert r.failure_reason == "push failed"
+
+
+class TestOnboardingModels:
+    def test_remediation_plan_round_trip(self) -> None:
+        from datetime import UTC, datetime
+
+        from temporal.models import ConfigChange, RemediationPlan
+
+        plan = RemediationPlan(
+            site_id="SITE-001",
+            device_id="DEV001",
+            snapshot_id="snap-abc",
+            changes=[
+                ConfigChange(
+                    section="bgp",
+                    description="Add peer 10.0.0.1",
+                    current="",
+                    intended="neighbor 10.0.0.1 remote-as 64512",
+                )
+            ],
+            estimated_impact="high",
+            created_at=datetime.now(UTC),
+        )
+        assert RemediationPlan.model_validate(plan.model_dump()) == plan
+
+    def test_onboard_site_input_round_trip(self) -> None:
+        from temporal.models import OnboardSiteInput
+
+        inp = OnboardSiteInput(site_id="SITE-001", device_id="DEV001", requested_by="eng")
+        assert OnboardSiteInput.model_validate(inp.model_dump()) == inp
+
+    def test_onboarding_status_values_are_stable(self) -> None:
+        from temporal.models import ProvisioningStatus
+
+        assert ProvisioningStatus.ONBOARD_PENDING == "ONBOARD_PENDING"
+        assert ProvisioningStatus.ONBOARD_MANAGED == "ONBOARD_MANAGED"
