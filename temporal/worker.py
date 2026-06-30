@@ -52,10 +52,18 @@ from temporal.activities.nautobot_activities import (
     fetch_site_devices,
     write_provisioning_status,
 )
+from temporal.activities.onboarding_activities import (
+    discover_device_config,
+    discover_device_state,
+    generate_remediation_plan,
+    reconcile_nautobot_records,
+)
 from temporal.activities.validation_activities import validate_device_state
 from temporal.config import get_settings as _get_settings
 from temporal.workflows.bootstrap_device import BootstrapDeviceWorkflow
+from temporal.workflows.bulk_onboarding import BulkOnboardingWorkflow
 from temporal.workflows.compliance_scan import ComplianceScanWorkflow
+from temporal.workflows.onboard_site import OnboardSiteWorkflow
 from temporal.workflows.provision_site import ProvisionSiteWorkflow
 
 load_dotenv()
@@ -156,6 +164,8 @@ _REGISTERED_WORKFLOWS = [
     BootstrapDeviceWorkflow,  # Day 0
     ProvisionSiteWorkflow,  # Day 1
     ComplianceScanWorkflow,  # Day 2
+    OnboardSiteWorkflow,  # Day 0.5
+    BulkOnboardingWorkflow,  # Day 0.5 orchestrator
 ]
 
 _REGISTERED_ACTIVITIES: list[Callable[..., Any]] = [
@@ -172,6 +182,11 @@ _REGISTERED_ACTIVITIES: list[Callable[..., Any]] = [
     fetch_site_devices,
     write_provisioning_status,
     validate_device_state,
+    # Day 0.5 — onboarding
+    discover_device_config,
+    discover_device_state,
+    reconcile_nautobot_records,
+    generate_remediation_plan,
 ]
 
 
