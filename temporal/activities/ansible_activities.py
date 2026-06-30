@@ -29,11 +29,13 @@ from datetime import UTC, datetime
 import ansible_runner
 import structlog
 from jinja2 import BaseLoader, Environment, StrictUndefined
+from opentelemetry import trace as _otel_trace
 from temporalio import activity
 
 from temporal.models import DeviceIntent, PushResult, RenderedConfig
 
 log = structlog.get_logger()
+_tracer = _otel_trace.get_tracer(__name__)
 
 # ---------------------------------------------------------------------------
 # IOS-XE configuration template
@@ -188,25 +190,27 @@ async def render_config(intent: DeviceIntent) -> RenderedConfig:
     The rendered text is stored as an immutable workflow artifact — push retries
     always push the same bytes, regardless of Nautobot changes after render time.
     """
-    log.info("render_config.started", device_id=intent.device_id, hostname=intent.hostname)
+    with _tracer.start_as_current_span("render_config") as span:
+        span.set_attribute("device.id", intent.device_id)
+        log.info("render_config.started", device_id=intent.device_id, hostname=intent.hostname)
 
-    rendered_at = datetime.now(tz=UTC).isoformat()
-    template = _JINJA_ENV.from_string(_IOS_XE_TEMPLATE)
-    config_text = template.render(intent=intent, rendered_at=rendered_at)
+        rendered_at = datetime.now(tz=UTC).isoformat()
+        template = _JINJA_ENV.from_string(_IOS_XE_TEMPLATE)
+        config_text = template.render(intent=intent, rendered_at=rendered_at)
 
-    log.info(
-        "render_config.complete",
-        device_id=intent.device_id,
-        lines=config_text.count("\n"),
-        bytes=len(config_text),
-    )
+        log.info(
+            "render_config.complete",
+            device_id=intent.device_id,
+            lines=config_text.count("\n"),
+            bytes=len(config_text),
+        )
 
-    return RenderedConfig(
-        device_id=intent.device_id,
-        config_content=config_text,
-        template_name="ios_xe_branch_router.j2",
-        rendered_at=datetime.now(tz=UTC),
-    )
+        return RenderedConfig(
+            device_id=intent.device_id,
+            config_content=config_text,
+            template_name="ios_xe_branch_router.j2",
+            rendered_at=datetime.now(tz=UTC),
+        )
 
 
 @activity.defn
@@ -222,58 +226,60 @@ async def push_config(config: RenderedConfig) -> PushResult:
       - push_config.yml: playbook that applies config_content to target_device
       - inventory/: static or dynamic inventory with device credentials from Vault
     """
-    log.info(
-        "push_config.started",
-        device_id=config.device_id,
-        config_bytes=len(config.config_content),
-        rendered_at=config.rendered_at.isoformat(),
-    )
-
-    extravars = {
-        "target_device": config.device_id,
-        "config_content": config.config_content,
-        "config_rendered_at": config.rendered_at.isoformat(),
-    }
-
-    # In production: remove the USE_MOCK guard and this runs for real.
-    # ansible_runner.run() is synchronous; to_thread keeps the event loop free.
-    USE_MOCK = True  # noqa: N806
-
-    if not USE_MOCK:
-        result = await asyncio.to_thread(
-            ansible_runner.run,
-            project_dir="/opt/ansible/projects/ztp",
-            playbook="push_config.yml",
-            inventory="/opt/ansible/inventory",
-            extravars=extravars,
-            quiet=False,
-        )
-        success = result.rc == 0
-        output = "\n".join(str(e) for e in result.events)
-    else:
-        log.debug(
-            "push_config.mock",
-            ansible_cmd="ansible-runner run /opt/ansible/projects/ztp --playbook push_config.yml",
-            extravars=extravars,
-        )
-        await asyncio.sleep(2)  # simulate network round-trip + Ansible task execution
-        success = True
-        output = (
-            f"PLAY [Push router config] ************************************\n"
-            f"TASK [Gather facts] ******************************************\n"
-            f"ok: [{config.device_id}]\n"
-            f"TASK [Deploy IOS-XE configuration] **************************\n"
-            f"changed: [{config.device_id}] => "
-            f"(config lines: {config.config_content.count(chr(10))})\n"
-            f"PLAY RECAP ***************************************************\n"
-            f"{config.device_id}  : ok=2  changed=1  unreachable=0  failed=0\n"
+    with _tracer.start_as_current_span("push_config") as span:
+        span.set_attribute("device.id", config.device_id)
+        log.info(
+            "push_config.started",
+            device_id=config.device_id,
+            config_bytes=len(config.config_content),
+            rendered_at=config.rendered_at.isoformat(),
         )
 
-    log.info("push_config.complete", device_id=config.device_id, success=success)
+        extravars = {
+            "target_device": config.device_id,
+            "config_content": config.config_content,
+            "config_rendered_at": config.rendered_at.isoformat(),
+        }
 
-    return PushResult(
-        device_id=config.device_id,
-        success=success,
-        output=output,
-        duration_seconds=2.0,
-    )
+        # In production: remove the USE_MOCK guard and this runs for real.
+        # ansible_runner.run() is synchronous; to_thread keeps the event loop free.
+        USE_MOCK = True  # noqa: N806
+
+        if not USE_MOCK:
+            result = await asyncio.to_thread(
+                ansible_runner.run,
+                project_dir="/opt/ansible/projects/ztp",
+                playbook="push_config.yml",
+                inventory="/opt/ansible/inventory",
+                extravars=extravars,
+                quiet=False,
+            )
+            success = result.rc == 0
+            output = "\n".join(str(e) for e in result.events)
+        else:
+            log.debug(
+                "push_config.mock",
+                ansible_cmd="ansible-runner run /opt/ansible/projects/ztp --playbook push_config.yml",
+                extravars=extravars,
+            )
+            await asyncio.sleep(2)  # simulate network round-trip + Ansible task execution
+            success = True
+            output = (
+                f"PLAY [Push router config] ************************************\n"
+                f"TASK [Gather facts] ******************************************\n"
+                f"ok: [{config.device_id}]\n"
+                f"TASK [Deploy IOS-XE configuration] **************************\n"
+                f"changed: [{config.device_id}] => "
+                f"(config lines: {config.config_content.count(chr(10))})\n"
+                f"PLAY RECAP ***************************************************\n"
+                f"{config.device_id}  : ok=2  changed=1  unreachable=0  failed=0\n"
+            )
+
+        log.info("push_config.complete", device_id=config.device_id, success=success)
+
+        return PushResult(
+            device_id=config.device_id,
+            success=success,
+            output=output,
+            duration_seconds=2.0,
+        )

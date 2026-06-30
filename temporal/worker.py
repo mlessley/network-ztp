@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import signal
 import sys
 from collections.abc import Callable
@@ -54,6 +53,7 @@ from temporal.activities.nautobot_activities import (
     write_provisioning_status,
 )
 from temporal.activities.validation_activities import validate_device_state
+from temporal.config import get_settings as _get_settings
 from temporal.workflows.bootstrap_device import BootstrapDeviceWorkflow
 from temporal.workflows.compliance_scan import ComplianceScanWorkflow
 from temporal.workflows.provision_site import ProvisionSiteWorkflow
@@ -61,14 +61,20 @@ from temporal.workflows.provision_site import ProvisionSiteWorkflow
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Configuration
+# OTel context injector
 # ---------------------------------------------------------------------------
 
-TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
-TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
-TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "ztp-queue")
-METRICS_PORT = int(os.getenv("METRICS_PORT", "9091"))
-ZTP_ENV = os.getenv("ZTP_ENV", "development")
+
+def _inject_otel_context(logger: object, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    if span.is_recording():
+        ctx = span.get_span_context()
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
+
 
 # ---------------------------------------------------------------------------
 # Structlog configuration
@@ -81,20 +87,22 @@ def configure_logging() -> None:
 
     Development: ConsoleRenderer with coloured level indicators.
     Production:  JSONRenderer for log aggregation (Loki, Splunk, CloudWatch).
-    Level is read from LOG_LEVEL env var (default INFO).
+    Level is read from settings (LOG_LEVEL env var, default INFO).
     """
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    s = _get_settings()
+    level_name = s.log_level.upper()
     level = getattr(logging, level_name, logging.INFO)
 
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        _inject_otel_context,  # type: ignore[list-item]
         structlog.processors.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
     ]
 
-    if ZTP_ENV == "production":
+    if s.ztp_env == "production":
         processors: list[structlog.types.Processor] = [
             *shared_processors,
             structlog.processors.ExceptionRenderer(),
@@ -154,33 +162,36 @@ _REGISTERED_ACTIVITIES: list[Callable[..., Any]] = [
 
 async def run_worker() -> None:
     """Start the Temporal worker and block until SIGINT/SIGTERM."""
+    s = _get_settings()
     configure_logging()
     log = structlog.get_logger()
 
     runtime = Runtime(
-        telemetry=TelemetryConfig(metrics=PrometheusConfig(bind_address=f"0.0.0.0:{METRICS_PORT}"))
+        telemetry=TelemetryConfig(
+            metrics=PrometheusConfig(bind_address=f"0.0.0.0:{s.metrics_port}")
+        )
     )
 
     client = await Client.connect(
-        TEMPORAL_HOST,
-        namespace=TEMPORAL_NAMESPACE,
+        s.temporal_host,
+        namespace=s.temporal_namespace,
         runtime=runtime,
     )
 
     worker = Worker(
         client,
-        task_queue=TEMPORAL_TASK_QUEUE,
+        task_queue=s.temporal_task_queue,
         workflows=_REGISTERED_WORKFLOWS,
         activities=_REGISTERED_ACTIVITIES,
     )
 
     log.info(
         "worker.starting",
-        env=ZTP_ENV,
-        temporal_host=TEMPORAL_HOST,
-        namespace=TEMPORAL_NAMESPACE,
-        task_queue=TEMPORAL_TASK_QUEUE,
-        metrics_port=METRICS_PORT,
+        env=s.ztp_env,
+        temporal_host=s.temporal_host,
+        namespace=s.temporal_namespace,
+        task_queue=s.temporal_task_queue,
+        metrics_port=s.metrics_port,
         workflows=[wf.__name__ for wf in _REGISTERED_WORKFLOWS],
         activities=[fn.__name__ for fn in _REGISTERED_ACTIVITIES],
     )
@@ -196,7 +207,7 @@ async def run_worker() -> None:
         loop.add_signal_handler(sig, _request_shutdown, sig)
 
     async with worker:
-        log.info("worker.ready", task_queue=TEMPORAL_TASK_QUEUE)
+        log.info("worker.ready", task_queue=s.temporal_task_queue)
         await shutdown_event.wait()
         log.info("worker.draining", note="waiting for in-flight activities to complete")
 

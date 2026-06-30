@@ -63,6 +63,7 @@ with workflow.unsafe.imports_passed_through():
         write_provisioning_status,
     )
     from temporal.activities.validation_activities import validate_device_state
+    from temporal.metrics import drift_detected, hitl_pending, workflow_completed, workflow_started
     from temporal.models import (
         DeviceIntent,
         ProvisioningStatus,
@@ -150,6 +151,7 @@ class ProvisionSiteWorkflow:
         """
         workflow_id = workflow.info().workflow_id
         device_id = input.device_id
+        workflow_started.labels(phase="day1").inc()
 
         workflow.logger.info(
             "ProvisionSiteWorkflow started: device_id=%s requested_by=%s workflow_id=%s",
@@ -232,6 +234,7 @@ class ProvisionSiteWorkflow:
                 )
                 workflow.logger.info("Validation passed — provisioning complete for %s", device_id)
                 await self._write_status(device_id, ProvisioningStatus.COMPLETE, workflow_id)
+                workflow_completed.labels(phase="day1", status="success").inc()
                 return ProvisionSiteResult(
                     device_id=device_id,
                     success=True,
@@ -250,12 +253,15 @@ class ProvisionSiteWorkflow:
                 device_id, ProvisioningStatus.AWAITING_HUMAN_APPROVAL, workflow_id
             )
 
+            drift_detected.labels(site_id=device_id).inc()
+            hitl_pending.inc()
             # Park here until a signal arrives or the 24-hour SLA expires.
             # wait_condition returns True if condition met, False on timeout.
             condition_met: bool = await workflow.wait_condition(  # type: ignore[func-returns-value, assignment]
                 lambda: self._approval_decision is not None,
                 timeout=timedelta(hours=24),
             )
+            hitl_pending.dec()
 
             if not condition_met:
                 raise ApplicationError(
@@ -271,6 +277,7 @@ class ProvisionSiteWorkflow:
 
             if decision == "approved":
                 await self._write_status(device_id, ProvisioningStatus.COMPLETE, workflow_id)
+                workflow_completed.labels(phase="day1", status="success").inc()
                 return ProvisionSiteResult(
                     device_id=device_id,
                     success=True,
@@ -290,6 +297,7 @@ class ProvisionSiteWorkflow:
         except (ApplicationError, ActivityError) as exc:
             workflow.logger.error("Provisioning failed for device_id=%s: %s", device_id, exc)
             await self._write_status(device_id, ProvisioningStatus.FAILED, workflow_id)
+            workflow_completed.labels(phase="day1", status="failure").inc()
             return ProvisionSiteResult(
                 device_id=device_id,
                 success=False,

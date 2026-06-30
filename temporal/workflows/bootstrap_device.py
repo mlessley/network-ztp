@@ -45,6 +45,7 @@ with workflow.unsafe.imports_passed_through():
         fetch_device_intent,
         write_provisioning_status,
     )
+    from temporal.metrics import workflow_completed, workflow_started
     from temporal.models import (
         BootstrapDeviceInput,
         BootstrapDeviceResult,
@@ -97,6 +98,7 @@ class BootstrapDeviceWorkflow:
         """
         workflow_id = workflow.info().workflow_id
         device_id = input.device_id
+        workflow_started.labels(phase="day0").inc()
 
         workflow.logger.info(
             "BootstrapDeviceWorkflow started: device_id=%s mac=%s requested_by=%s",
@@ -212,6 +214,7 @@ class BootstrapDeviceWorkflow:
                 device_id,
                 day1_result.workflow_id,
             )
+            workflow_completed.labels(phase="day0", status="success").inc()
             return BootstrapDeviceResult(
                 device_id=device_id,
                 success=True,
@@ -221,6 +224,7 @@ class BootstrapDeviceWorkflow:
         except (ApplicationError, ActivityError) as exc:
             workflow.logger.error("Bootstrap failed for device_id=%s: %s", device_id, exc)
             await self._write_status(device_id, ProvisioningStatus.FAILED, workflow_id)
+            workflow_completed.labels(phase="day0", status="failure").inc()
             return BootstrapDeviceResult(
                 device_id=device_id,
                 success=False,

@@ -29,11 +29,13 @@ import random
 
 import napalm
 import structlog
+from opentelemetry import trace as _otel_trace
 from temporalio import activity
 
 from temporal.models import DeviceIntent, ValidationResult
 
 log = structlog.get_logger()
+_tracer = _otel_trace.get_tracer(__name__)
 
 # Realistic drift scenarios a network engineer would recognise.
 _DRIFT_SCENARIOS: list[str] = [
@@ -81,31 +83,33 @@ async def validate_device_state(
         ValidationResult with passed=True and empty drift_detected on success,
         or passed=False with drift descriptions on failure.
     """
-    log.info(
-        "validate_device_state.started",
-        device_id=device_id,
-        hostname=expected.hostname,
-    )
-
-    if not _USE_MOCK:
-        drift = await _validate_via_napalm(device_id, expected)
-    else:
-        await asyncio.sleep(1)  # simulate SSH round-trip + config parse latency
-        drift = _simulate_validation()
-
-    passed = len(drift) == 0
-
-    if passed:
-        log.info("validate_device_state.passed", device_id=device_id)
-    else:
-        log.warning(
-            "validate_device_state.drift_detected",
+    with _tracer.start_as_current_span("validate_device_state") as span:
+        span.set_attribute("device.id", device_id)
+        log.info(
+            "validate_device_state.started",
             device_id=device_id,
-            drift_count=len(drift),
-            drift_items=drift,
+            hostname=expected.hostname,
         )
 
-    return ValidationResult(device_id=device_id, passed=passed, drift_detected=drift)
+        if not _USE_MOCK:
+            drift = await _validate_via_napalm(device_id, expected)
+        else:
+            await asyncio.sleep(1)  # simulate SSH round-trip + config parse latency
+            drift = _simulate_validation()
+
+        passed = len(drift) == 0
+
+        if passed:
+            log.info("validate_device_state.passed", device_id=device_id)
+        else:
+            log.warning(
+                "validate_device_state.drift_detected",
+                device_id=device_id,
+                drift_count=len(drift),
+                drift_items=drift,
+            )
+
+        return ValidationResult(device_id=device_id, passed=passed, drift_detected=drift)
 
 
 async def _validate_via_napalm(device_id: str, expected: DeviceIntent) -> list[str]:

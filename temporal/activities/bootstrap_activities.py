@@ -31,12 +31,14 @@ from datetime import UTC, datetime
 
 import structlog
 from jinja2 import BaseLoader, Environment, StrictUndefined
+from opentelemetry import trace as _otel_trace
 from temporalio import activity
 from tenacity import retry, stop_after_delay, wait_fixed
 
 from temporal.models import BootstrapScript, DeviceIntent, DhcpReservation
 
 log = structlog.get_logger()
+_tracer = _otel_trace.get_tracer(__name__)
 
 BOOTSTRAP_SERVER_URL = os.getenv("BOOTSTRAP_SERVER_URL", "http://bootstrap.corp.example.com")
 BOOTSTRAP_SERVE_DIR = os.getenv("BOOTSTRAP_SERVE_DIR", "/opt/bootstrap/scripts")
@@ -136,44 +138,46 @@ async def register_dhcp_reservation(
     In production this POSTs to the DHCP server's management API
     (ISC DHCP, Kea, or Infoblox REST).
     """
-    script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{device_id}.py"
-    dhcp_payload = {
-        "mac": mac_address,
-        "hostname": hostname,
-        "option67": script_url,
-        "lease_time": 3600,
-    }
+    with _tracer.start_as_current_span("register_dhcp_reservation") as span:
+        span.set_attribute("device.id", device_id)
+        script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{device_id}.py"
+        dhcp_payload = {
+            "mac": mac_address,
+            "hostname": hostname,
+            "option67": script_url,
+            "lease_time": 3600,
+        }
 
-    log.info(
-        "register_dhcp_reservation.started",
-        mac_address=mac_address,
-        device_id=device_id,
-        script_url=script_url,
-    )
-
-    if _USE_MOCK:
-        log.debug(
-            "register_dhcp_reservation.mock",
-            dhcp_api=f"{DHCP_API_URL}/api/reservations",
-            payload=dhcp_payload,
+        log.info(
+            "register_dhcp_reservation.started",
+            mac_address=mac_address,
+            device_id=device_id,
+            script_url=script_url,
         )
-    else:
-        import httpx
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{DHCP_API_URL}/api/reservations",
-                json=dhcp_payload,
+        if _USE_MOCK:
+            log.debug(
+                "register_dhcp_reservation.mock",
+                dhcp_api=f"{DHCP_API_URL}/api/reservations",
+                payload=dhcp_payload,
             )
-            response.raise_for_status()
+        else:
+            import httpx
 
-    log.info("register_dhcp_reservation.complete", device_id=device_id, mac_address=mac_address)
-    return DhcpReservation(
-        device_id=device_id,
-        mac_address=mac_address,
-        assigned_ip="10.100.255.1",
-        lease_seconds=3600,
-    )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{DHCP_API_URL}/api/reservations",
+                    json=dhcp_payload,
+                )
+                response.raise_for_status()
+
+        log.info("register_dhcp_reservation.complete", device_id=device_id, mac_address=mac_address)
+        return DhcpReservation(
+            device_id=device_id,
+            mac_address=mac_address,
+            assigned_ip="10.100.255.1",
+            lease_seconds=3600,
+        )
 
 
 @activity.defn
@@ -184,34 +188,36 @@ async def render_bootstrap_script(intent: DeviceIntent) -> BootstrapScript:
     Fails fast if default_gateway is missing — the device cannot bootstrap
     without a default route to reach the management network.
     """
-    log.info(
-        "render_bootstrap_script.started",
-        device_id=intent.device_id,
-        hostname=intent.hostname,
-    )
-
-    if not intent.default_gateway:
-        raise ValueError(
-            f"device_id={intent.device_id} has no default_gateway in Nautobot config context"
+    with _tracer.start_as_current_span("render_bootstrap_script") as span:
+        span.set_attribute("device.id", intent.device_id)
+        log.info(
+            "render_bootstrap_script.started",
+            device_id=intent.device_id,
+            hostname=intent.hostname,
         )
 
-    rendered_at = datetime.now(tz=UTC).isoformat()
-    template = _JINJA_ENV.from_string(_ZTP_SCRIPT_TEMPLATE)
-    script_text = template.render(intent=intent, rendered_at=rendered_at)
-    script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{intent.device_id}.py"
+        if not intent.default_gateway:
+            raise ValueError(
+                f"device_id={intent.device_id} has no default_gateway in Nautobot config context"
+            )
 
-    log.info(
-        "render_bootstrap_script.complete",
-        device_id=intent.device_id,
-        lines=script_text.count("\n"),
-        url=script_url,
-    )
+        rendered_at = datetime.now(tz=UTC).isoformat()
+        template = _JINJA_ENV.from_string(_ZTP_SCRIPT_TEMPLATE)
+        script_text = template.render(intent=intent, rendered_at=rendered_at)
+        script_url = f"{BOOTSTRAP_SERVER_URL}/ztp/{intent.device_id}.py"
 
-    return BootstrapScript(
-        device_id=intent.device_id,
-        script_content=script_text,
-        script_url=script_url,
-    )
+        log.info(
+            "render_bootstrap_script.complete",
+            device_id=intent.device_id,
+            lines=script_text.count("\n"),
+            url=script_url,
+        )
+
+        return BootstrapScript(
+            device_id=intent.device_id,
+            script_content=script_text,
+            script_url=script_url,
+        )
 
 
 @activity.defn
@@ -222,26 +228,28 @@ async def publish_bootstrap_script(script: BootstrapScript) -> None:
     In production this writes to an nginx-served path or uploads to S3.
     The script must be accessible at script.script_url before the device boots.
     """
-    script_path = f"{BOOTSTRAP_SERVE_DIR}/{script.device_id}.py"
+    with _tracer.start_as_current_span("publish_bootstrap_script") as span:
+        span.set_attribute("device.id", script.device_id)
+        script_path = f"{BOOTSTRAP_SERVE_DIR}/{script.device_id}.py"
 
-    log.info(
-        "publish_bootstrap_script.started",
-        device_id=script.device_id,
-        path=script_path,
-        url=script.script_url,
-    )
-
-    if _USE_MOCK:
-        log.debug(
-            "publish_bootstrap_script.mock",
-            preview="\n".join(script.script_content.splitlines()[:3]),
+        log.info(
+            "publish_bootstrap_script.started",
+            device_id=script.device_id,
+            path=script_path,
+            url=script.script_url,
         )
-    else:
-        # In production: write to the file server path or upload to object storage.
-        with open(script_path, "w") as fh:
-            fh.write(script.script_content)
 
-    log.info("publish_bootstrap_script.complete", device_id=script.device_id)
+        if _USE_MOCK:
+            log.debug(
+                "publish_bootstrap_script.mock",
+                preview="\n".join(script.script_content.splitlines()[:3]),
+            )
+        else:
+            # In production: write to the file server path or upload to object storage.
+            with open(script_path, "w") as fh:
+                fh.write(script.script_content)
+
+        log.info("publish_bootstrap_script.complete", device_id=script.device_id)
 
 
 @activity.defn
@@ -257,37 +265,39 @@ async def wait_for_device_reachability(device_id: str, management_ip: str) -> bo
     In production: attempts asyncio TCP connect to port 22.  The first
     successful connect means the bootstrap script ran and SSH is up.
     """
-    log.info(
-        "wait_for_device_reachability.started",
-        device_id=device_id,
-        management_ip=management_ip,
-    )
-
-    if _USE_MOCK:
-        log.debug(
-            "wait_for_device_reachability.mock",
-            poll="SSH port 22 every 30s until reachable",
+    with _tracer.start_as_current_span("wait_for_device_reachability") as span:
+        span.set_attribute("device.id", device_id)
+        log.info(
+            "wait_for_device_reachability.started",
+            device_id=device_id,
+            management_ip=management_ip,
         )
-        await asyncio.sleep(2)
+
+        if _USE_MOCK:
+            log.debug(
+                "wait_for_device_reachability.mock",
+                poll="SSH port 22 every 30s until reachable",
+            )
+            await asyncio.sleep(2)
+            log.info("wait_for_device_reachability.online", device_id=device_id)
+            return True
+
+        # Production: tenacity wraps the SSH probe.
+        # stop_after_delay is a safety net — the Temporal 8h timeout is the real bound.
+        _ssh_probe_with_retry = retry(
+            stop=stop_after_delay(8 * 3600),
+            wait=wait_fixed(30),
+            reraise=True,
+            before_sleep=lambda rs: log.debug(
+                "wait_for_device_reachability.retry",
+                device_id=device_id,
+                attempt=rs.attempt_number,
+            ),
+        )(_probe_ssh)
+
+        await asyncio.to_thread(_ssh_probe_with_retry, management_ip)
         log.info("wait_for_device_reachability.online", device_id=device_id)
         return True
-
-    # Production: tenacity wraps the SSH probe.
-    # stop_after_delay is a safety net — the Temporal 8h timeout is the real bound.
-    _ssh_probe_with_retry = retry(
-        stop=stop_after_delay(8 * 3600),
-        wait=wait_fixed(30),
-        reraise=True,
-        before_sleep=lambda rs: log.debug(
-            "wait_for_device_reachability.retry",
-            device_id=device_id,
-            attempt=rs.attempt_number,
-        ),
-    )(_probe_ssh)
-
-    await asyncio.to_thread(_ssh_probe_with_retry, management_ip)
-    log.info("wait_for_device_reachability.online", device_id=device_id)
-    return True
 
 
 def _probe_ssh(host: str, port: int = 22, timeout: float = 5.0) -> None:

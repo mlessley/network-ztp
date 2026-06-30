@@ -44,6 +44,7 @@ with workflow.unsafe.imports_passed_through():
         write_provisioning_status,
     )
     from temporal.activities.validation_activities import validate_device_state
+    from temporal.metrics import drift_detected, workflow_completed, workflow_started
     from temporal.models import (
         ComplianceScanInput,
         ComplianceScanResult,
@@ -91,6 +92,7 @@ class ComplianceScanWorkflow:
             ComplianceScanResult with per-device pass/drift breakdown.
         """
         workflow_id = workflow.info().workflow_id
+        workflow_started.labels(phase="day2").inc()
 
         workflow.logger.info(
             "ComplianceScanWorkflow started: site_id=%s requested_by=%s workflow_id=%s",
@@ -159,6 +161,7 @@ class ComplianceScanWorkflow:
                 if validation.passed:
                     workflow.logger.info("Compliance PASSED: device_id=%s", device_id)
                 else:
+                    drift_detected.labels(site_id=input.site_id).inc()
                     workflow.logger.warning(
                         "Compliance DRIFTED: device_id=%s drift=%s",
                         device_id,
@@ -192,6 +195,7 @@ class ComplianceScanWorkflow:
             len(drifted),
         )
 
+        workflow_completed.labels(phase="day2", status="success").inc()
         return ComplianceScanResult(
             site_id=input.site_id,
             workflow_id=workflow_id,

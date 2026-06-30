@@ -85,7 +85,10 @@ query SiteDevices($site_id: ID!) {
 # Activities
 # ---------------------------------------------------------------------------
 
+from opentelemetry import trace as _otel_trace  # noqa: E402 — must follow top-level imports
 from temporalio import activity  # noqa: E402 — must follow top-level imports
+
+_tracer = _otel_trace.get_tracer(__name__)
 
 
 @activity.defn
@@ -105,32 +108,34 @@ async def fetch_device_intent(device_id: str) -> DeviceIntent:
     Returns:
         Fully-populated DeviceIntent representing the current desired state.
     """
-    log.info("fetch_device_intent.started", device_id=device_id)
+    with _tracer.start_as_current_span("fetch_device_intent") as span:
+        span.set_attribute("device.id", device_id)
+        log.info("fetch_device_intent.started", device_id=device_id)
 
-    if _USE_MOCK:
-        log.debug("fetch_device_intent.mock", device_id=device_id)
-        raw_device = _mock_graphql_response(device_id)
-    else:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{NAUTOBOT_URL}/graphql/",
-                headers=_GRAPHQL_HEADERS,
-                json={"query": _DEVICE_INTENT_QUERY, "variables": {"device_id": device_id}},
-            )
-            response.raise_for_status()
-            raw_device = response.json()["data"]["device"]
+        if _USE_MOCK:
+            log.debug("fetch_device_intent.mock", device_id=device_id)
+            raw_device = _mock_graphql_response(device_id)
+        else:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{NAUTOBOT_URL}/graphql/",
+                    headers=_GRAPHQL_HEADERS,
+                    json={"query": _DEVICE_INTENT_QUERY, "variables": {"device_id": device_id}},
+                )
+                response.raise_for_status()
+                raw_device = response.json()["data"]["device"]
 
-    intent = _parse_device_intent(raw_device)
+        intent = _parse_device_intent(raw_device)
 
-    log.info(
-        "fetch_device_intent.complete",
-        device_id=device_id,
-        hostname=intent.hostname,
-        platform=intent.platform,
-        interface_count=len(intent.interfaces),
-        vlan_count=len(intent.vlans),
-    )
-    return intent
+        log.info(
+            "fetch_device_intent.complete",
+            device_id=device_id,
+            hostname=intent.hostname,
+            platform=intent.platform,
+            interface_count=len(intent.interfaces),
+            vlan_count=len(intent.vlans),
+        )
+        return intent
 
 
 @activity.defn
@@ -151,41 +156,45 @@ async def write_provisioning_status(
 
     Uses pynautobot for REST PATCH (wrapped in asyncio.to_thread for async safety).
     """
-    log.info(
-        "write_provisioning_status.started",
-        device_id=device_id,
-        status=status,
-        workflow_id=workflow_id,
-    )
-
-    # Validate status value early — catches typos before the API call.
-    try:
-        ProvisioningStatus(status)
-    except ValueError:
-        log.warning("write_provisioning_status.unknown_status", status=status)
-
-    patch_payload = {
-        "custom_fields": {
-            "ztp_provisioning_status": status,
-            "ztp_workflow_id": workflow_id,
-        }
-    }
-
-    if _USE_MOCK:
-        log.debug(
-            "write_provisioning_status.mock",
-            url=f"{NAUTOBOT_URL}/api/dcim/devices/{device_id}/",
-            payload=patch_payload,
+    with _tracer.start_as_current_span("write_provisioning_status") as span:
+        span.set_attribute("device.id", device_id)
+        log.info(
+            "write_provisioning_status.started",
+            device_id=device_id,
+            status=status,
+            workflow_id=workflow_id,
         )
-        return
 
-    # pynautobot is sync — wrap in to_thread so we don't block the event loop.
-    def _patch() -> None:
-        nb = pynautobot.api(url=NAUTOBOT_URL, token=NAUTOBOT_TOKEN)
-        nb.dcim.devices.update([{"id": device_id, "custom_fields": patch_payload["custom_fields"]}])
+        # Validate status value early — catches typos before the API call.
+        try:
+            ProvisioningStatus(status)
+        except ValueError:
+            log.warning("write_provisioning_status.unknown_status", status=status)
 
-    await asyncio.to_thread(_patch)
-    log.info("write_provisioning_status.complete", device_id=device_id, status=status)
+        patch_payload = {
+            "custom_fields": {
+                "ztp_provisioning_status": status,
+                "ztp_workflow_id": workflow_id,
+            }
+        }
+
+        if _USE_MOCK:
+            log.debug(
+                "write_provisioning_status.mock",
+                url=f"{NAUTOBOT_URL}/api/dcim/devices/{device_id}/",
+                payload=patch_payload,
+            )
+            return
+
+        # pynautobot is sync — wrap in to_thread so we don't block the event loop.
+        def _patch() -> None:
+            nb = pynautobot.api(url=NAUTOBOT_URL, token=NAUTOBOT_TOKEN)
+            nb.dcim.devices.update(
+                [{"id": device_id, "custom_fields": patch_payload["custom_fields"]}]
+            )
+
+        await asyncio.to_thread(_patch)
+        log.info("write_provisioning_status.complete", device_id=device_id, status=status)
 
 
 @activity.defn
@@ -196,25 +205,27 @@ async def fetch_site_devices(site_id: str) -> list[str]:
     Returns only device UUIDs — the compliance workflow fetches full intent
     for each device individually so retries are scoped per device.
     """
-    log.info("fetch_site_devices.started", site_id=site_id)
+    with _tracer.start_as_current_span("fetch_site_devices") as span:
+        span.set_attribute("site.id", site_id)
+        log.info("fetch_site_devices.started", site_id=site_id)
 
-    if _USE_MOCK:
-        mock_ids = [f"DEV{str(i).zfill(3)}" for i in range(1, 6)]
-        log.debug("fetch_site_devices.mock", site_id=site_id, count=len(mock_ids))
-        return mock_ids
+        if _USE_MOCK:
+            mock_ids = [f"DEV{str(i).zfill(3)}" for i in range(1, 6)]
+            log.debug("fetch_site_devices.mock", site_id=site_id, count=len(mock_ids))
+            return mock_ids
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{NAUTOBOT_URL}/graphql/",
-            headers=_GRAPHQL_HEADERS,
-            json={"query": _SITE_DEVICES_QUERY, "variables": {"site_id": site_id}},
-        )
-        response.raise_for_status()
-        devices = response.json()["data"]["site"]["devices"]
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{NAUTOBOT_URL}/graphql/",
+                headers=_GRAPHQL_HEADERS,
+                json={"query": _SITE_DEVICES_QUERY, "variables": {"site_id": site_id}},
+            )
+            response.raise_for_status()
+            devices = response.json()["data"]["site"]["devices"]
 
-    ids = [d["id"] for d in devices]
-    log.info("fetch_site_devices.complete", site_id=site_id, count=len(ids))
-    return ids
+        ids = [d["id"] for d in devices]
+        log.info("fetch_site_devices.complete", site_id=site_id, count=len(ids))
+        return ids
 
 
 # ---------------------------------------------------------------------------

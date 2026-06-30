@@ -13,6 +13,22 @@ from api.middleware.identity import IdentityMiddleware
 from api.middleware.observability import ObservabilityMiddleware
 
 
+def _setup_tracing(service_name: str, otlp_endpoint: str) -> None:
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service_name}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint)))
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor().instrument()
+    HTTPXClientInstrumentor().instrument()
+
+
 def create_app(
     settings: Settings | None = None,
     temporal_client: Any = None,
@@ -58,4 +74,8 @@ def create_app(
     app.include_router(onboarding.router, prefix="/v1")
 
     register_error_handlers(app)
+
+    if _settings.otlp_endpoint:
+        _setup_tracing("ztp-api", _settings.otlp_endpoint)
+
     return app
