@@ -6,22 +6,32 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ansible-runner>=2.4.3",
-    "httpx2>=2.5.0",
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
     "jinja2>=3.1.6",
     "napalm>=5.1.0",
     "netmiko>=4.7.0",
+    "opentelemetry-api>=1.29.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29.0",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-instrumentation-httpx>=0.50b0",
+    "opentelemetry-sdk>=1.29.0",
     "pydantic>=2.13.4",
+    "pydantic-settings>=2.7.0",
     "pynautobot>=3.1.0",
     "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.20",
     "rich>=15.0.0",
     "structlog>=26.1.0",
     "temporalio>=1.29.0",
     "tenacity>=9.1.4",
+    "uvicorn[standard]>=0.34.0",
 ]
 
 [dependency-groups]
 dev = [
     "freezegun>=1.5.5",
+    "httpx>=0.28.0",
     "mypy>=2.1.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -38,7 +48,7 @@ select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]  # handled by formatter
 
 [tool.ruff.lint.isort]
-known-first-party = ["temporal"]
+known-first-party = ["temporal", "api"]
 
 [tool.mypy]
 strict = true

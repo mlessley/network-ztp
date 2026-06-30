@@ -158,7 +158,7 @@ async def register_dhcp_reservation(
             payload=dhcp_payload,
         )
     else:
-        import httpx2 as httpx
+        import httpx
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(

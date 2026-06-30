@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-import httpx2 as httpx
+import httpx
 import pynautobot
 import structlog
 

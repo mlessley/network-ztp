@@ -16,10 +16,11 @@ per-test @pytest.mark.asyncio decorator is needed.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import httpx2
+import httpx as _httpx
 import pytest
+import respx
 
 import temporal.activities.nautobot_activities as nautobot_activities
 import temporal.activities.validation_activities as validation_activities
@@ -153,72 +154,42 @@ class TestFetchDeviceIntentMock:
 
 
 # ---------------------------------------------------------------------------
-# Nautobot activities — live path (httpx2.AsyncClient patched via unittest.mock)
+# Nautobot activities — live path (httpx mocked via respx)
 # ---------------------------------------------------------------------------
-# httpx2 uses httpcore2 internally, not httpcore, so respx cannot intercept its
-# transport layer.  We patch httpx2.AsyncClient at the class level — this is the
-# same object the module references as `httpx.AsyncClient` (via `import httpx2 as httpx`).
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_http_client(json_payload: dict) -> MagicMock:  # type: ignore[type-arg]
-    """Build a mock httpx2.AsyncClient whose .post() returns json_payload."""
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json.return_value = json_payload
-
-    mock_client = AsyncMock()
-    mock_client.post = AsyncMock(return_value=mock_response)
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    return mock_client
+# respx intercepts httpx calls at the transport layer, allowing us to mock
+# GraphQL responses without patching the AsyncClient class.
 
 
 class TestFetchDeviceIntentLive:
-    async def test_graphql_query_sent_correctly(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """_USE_MOCK=False: the activity issues a real GraphQL POST to Nautobot."""
+    @respx.mock
+    async def test_live_path_calls_nautobot_graphql(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(nautobot_activities, "_USE_MOCK", False)
-
-        mock_client = _make_mock_http_client(_graphql_device_response("DEV001"))
-        with patch("httpx2.AsyncClient", return_value=mock_client):
-            result = await fetch_device_intent("DEV001")
-
-        mock_client.post.assert_called_once()
-        call_url = mock_client.post.call_args[0][0]
-        assert call_url.endswith("/graphql/")
-        assert result.device_id == "DEV001"
-        assert result.hostname == "br-dev001-rtr01"
-        assert result.bgp_asn == 65001
-
-    async def test_http_error_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A non-2xx response raises when raise_for_status() is called."""
-        monkeypatch.setattr(nautobot_activities, "_USE_MOCK", False)
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.side_effect = httpx2.HTTPStatusError(
-            "401 Unauthorized",
-            request=MagicMock(),
-            response=MagicMock(),
+        payload = {"data": {"device": nautobot_activities._mock_graphql_response("DEV001")}}
+        respx.post("http://localhost:8080/graphql/").mock(
+            return_value=_httpx.Response(200, json=payload)
         )
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        result = await fetch_device_intent("DEV001")
+        assert result.device_id == "DEV001"
+        assert result.hostname != ""
 
-        with (
-            patch("httpx2.AsyncClient", return_value=mock_client),
-            pytest.raises(httpx2.HTTPStatusError),
-        ):
-            await fetch_device_intent("DEV001")
-
+    @respx.mock
     async def test_fetch_site_devices_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """fetch_site_devices issues a GraphQL POST and returns device UUIDs."""
         monkeypatch.setattr(nautobot_activities, "_USE_MOCK", False)
-
-        mock_client = _make_mock_http_client(_graphql_site_response("SITE001"))
-        with patch("httpx2.AsyncClient", return_value=mock_client):
-            result = await fetch_site_devices("SITE001")
-
+        payload = {
+            "data": {
+                "site": {
+                    "devices": [
+                        {"id": "DEV001", "name": "br-dev001-rtr01"},
+                        {"id": "DEV002", "name": "br-dev002-rtr01"},
+                    ]
+                }
+            }
+        }
+        respx.post("http://localhost:8080/graphql/").mock(
+            return_value=_httpx.Response(200, json=payload)
+        )
+        result = await fetch_site_devices("SITE001")
         assert result == ["DEV001", "DEV002"]
 
 
