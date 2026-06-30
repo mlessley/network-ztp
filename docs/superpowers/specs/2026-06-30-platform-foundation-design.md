@@ -281,6 +281,11 @@ Nautobot fires a webhook when a device record is created or set to Active. The h
 In mock mode (`ZTP_USE_MOCK=true`) the endpoint accepts a simplified payload so
 engineers can trigger the bootstrap flow with a single `curl` command locally.
 
+Nautobot uses at-least-once webhook delivery — the same `device.created` event may
+fire more than once. The workflow submission returns `409 Conflict` if a workflow for
+that `device_id` is already running. The handler treats 409 as success and returns
+`200` to Nautobot. This is intentional idempotency, not an error to retry around.
+
 ### 4.3 Middleware Stack
 
 Middleware executes in this order, outermost first:
@@ -513,15 +518,25 @@ child workflow spawning via `workflow.sleep()` between submissions.
 
 Per-site child workflow. Each step is a separate activity to enable independent retry.
 
+**Precondition:** Onboarding assumes a stub device record already exists in Nautobot
+before this workflow starts — at minimum: device name, management IP, site assignment,
+and device role. Stub records are created by the network discovery/planning process
+before bulk onboarding is triggered. `reconcile_nautobot_records` UPDATES these stubs
+with discovered detail; it does not create devices from scratch.
+
 ```
-fetch_device_intent           (existing activity — reused)
-discover_device_config        (new — NAPALM get_config, read-only)
-discover_device_state         (new — NAPALM get_interfaces + get_bgp_neighbors)
-reconcile_nautobot_records    (new — compare/create/update Nautobot records)
-generate_remediation_plan     (new — structured diff, no config push)
-[HITL: engineer reviews plan and approves or rejects]
-remediate_drift               (existing push_config — only runs after approval)
-write_provisioning_status     (existing activity — marks MANAGED or FAILED)
+fetch_device_intent           (existing — reads stub from Nautobot, provides mgmt IP
+                               that NAPALM needs in subsequent steps)
+discover_device_config        (new — NAPALM get_config() using mgmt IP, read-only)
+discover_device_state         (new — NAPALM get_interfaces() + get_bgp_neighbors())
+reconcile_nautobot_records    (new — PATCH Nautobot stub with discovered interfaces,
+                               IPs, and BGP peers; never creates new device records)
+generate_remediation_plan     (new — diffs live config against updated Nautobot intent,
+                               returns RemediationPlan; no config push)
+[HITL: engineer reviews RemediationPlan and approves or rejects]
+remediate_drift               (existing push_config — only runs after approval,
+                               receives RemediationPlan as input)
+write_provisioning_status     (existing — marks MANAGED or FAILED)
 ```
 
 The config snapshot from `discover_device_config` is stored in Temporal workflow
@@ -537,8 +552,31 @@ All are read-only except `remediate_drift` (which delegates to the existing `pus
 |----------|--------------|-----------|
 | `discover_device_config` | NAPALM `get_config()` in `asyncio.to_thread()` | Returns realistic Cisco IOS-XE config string |
 | `discover_device_state` | NAPALM `get_interfaces()` + `get_bgp_neighbors()` | Returns intent-consistent mock state |
-| `reconcile_nautobot_records` | pynautobot REST PATCH via `asyncio.to_thread()` | Logs what would be created/updated |
+| `reconcile_nautobot_records` | pynautobot REST PATCH via `asyncio.to_thread()` | Logs what would be patched |
 | `generate_remediation_plan` | Pure computation — no external call | Same code path, no mock needed |
+
+**`RemediationPlan` model** (added to `temporal/models.py` — activity boundary contract
+between `generate_remediation_plan` and `remediate_drift`):
+
+```python
+class ConfigChange(BaseModel):
+    section: str        # e.g. "interfaces", "bgp", "vlans", "aaa"
+    description: str    # human-readable summary shown to the HITL reviewer
+    current: str        # raw config fragment currently on the device
+    intended: str       # config fragment Nautobot intent specifies
+
+class RemediationPlan(BaseModel):
+    site_id: str
+    device_id: str
+    snapshot_id: str    # workflow history key for the discover_device_config artifact
+    changes: list[ConfigChange]
+    estimated_impact: Literal["low", "medium", "high"]
+    created_at: datetime
+```
+
+`estimated_impact` is set by `generate_remediation_plan` based on heuristics: BGP
+changes are `"high"`, interface additions are `"medium"`, NTP/SNMP changes are `"low"`.
+The HITL reviewer sees this before deciding to approve or reject.
 
 ### 5.5 Throttling Rationale
 
