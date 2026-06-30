@@ -28,8 +28,3 @@ class BulkOnboardRequest(BaseModel):
     sites_per_hour: int = 50
     max_concurrent: int = 10
     requested_by: str
-
-
-class AdjustRateRequest(BaseModel):
-    sites_per_hour: int
-    max_concurrent: int

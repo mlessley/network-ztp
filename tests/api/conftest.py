@@ -22,7 +22,9 @@ def settings() -> Settings:
 def mock_temporal_client() -> MagicMock:
     handle = MagicMock()
     handle.id = "test-workflow-id-001"
-    handle.query = AsyncMock(return_value="COMPLETED")
+    handle.query = AsyncMock(
+        return_value={"pending": 3, "in_flight": 1, "managed": 10, "failed": 0}
+    )
     handle.signal = AsyncMock()
     handle.describe = AsyncMock(
         return_value=MagicMock(

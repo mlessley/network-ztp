@@ -14,9 +14,6 @@ Commands:
     onboard           — Day 0.5: onboard a single site
     bulk-onboard      — Day 0.5: onboard multiple sites in bulk
     onboard-status    — Day 0.5: check the status of the bulk onboarding workflow
-    pause-onboarding  — send a pause signal to a bulk onboarding workflow
-    resume-onboarding — send a resume signal to a bulk onboarding workflow
-    adjust-rate       — adjust the sites-per-hour rate of a bulk onboarding workflow
 """
 
 from __future__ import annotations
@@ -191,49 +188,6 @@ async def cmd_onboard_status() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Command: pause-onboarding
-# ---------------------------------------------------------------------------
-
-
-async def cmd_pause_onboarding(workflow_id: str) -> None:
-    async with _client() as c:
-        r = await c.post(f"/v1/onboarding/bulk/{workflow_id}/pause")
-    r.raise_for_status()
-    _console.print(f"[yellow]Onboarding workflow {workflow_id} paused[/yellow]")
-
-
-# ---------------------------------------------------------------------------
-# Command: resume-onboarding
-# ---------------------------------------------------------------------------
-
-
-async def cmd_resume_onboarding(workflow_id: str) -> None:
-    async with _client() as c:
-        r = await c.post(f"/v1/onboarding/bulk/{workflow_id}/resume")
-    r.raise_for_status()
-    _console.print(f"[green]Onboarding workflow {workflow_id} resumed[/green]")
-
-
-# ---------------------------------------------------------------------------
-# Command: adjust-rate
-# ---------------------------------------------------------------------------
-
-
-async def cmd_adjust_rate(workflow_id: str, sites_per_hour: int, max_concurrent: int) -> None:
-    async with _client() as c:
-        r = await c.post(
-            f"/v1/onboarding/bulk/{workflow_id}/adjust-rate",
-            json={"sites_per_hour": sites_per_hour, "max_concurrent": max_concurrent},
-        )
-    r.raise_for_status()
-    data = r.json()
-    _console.print(
-        f"[green]Rate adjusted: {data['sites_per_hour']} sites/hr, "
-        f"{data['max_concurrent']} concurrent[/green]"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -281,17 +235,6 @@ def main() -> None:
 
     sub.add_parser("onboard-status", help="Check bulk onboarding progress")
 
-    p = sub.add_parser("pause-onboarding", help="Pause a bulk onboarding workflow")
-    p.add_argument("--workflow-id", required=True)
-
-    p = sub.add_parser("resume-onboarding", help="Resume a paused bulk onboarding workflow")
-    p.add_argument("--workflow-id", required=True)
-
-    p = sub.add_parser("adjust-rate", help="Adjust rate for a bulk onboarding workflow")
-    p.add_argument("--workflow-id", required=True)
-    p.add_argument("--sites-per-hour", type=int, required=True)
-    p.add_argument("--max-concurrent", type=int, required=True)
-
     args = parser.parse_args()
 
     dispatch = {
@@ -309,13 +252,8 @@ def main() -> None:
             args.max_concurrent,
         ),
         "onboard-status": cmd_onboard_status,
-        "pause-onboarding": lambda: cmd_pause_onboarding(args.workflow_id),
-        "resume-onboarding": lambda: cmd_resume_onboarding(args.workflow_id),
-        "adjust-rate": lambda: cmd_adjust_rate(
-            args.workflow_id, args.sites_per_hour, args.max_concurrent
-        ),
     }
-    asyncio.run(dispatch[args.command]())  # type: ignore[no-untyped-call]
+    asyncio.run(dispatch[args.command]())
 
 
 if __name__ == "__main__":
