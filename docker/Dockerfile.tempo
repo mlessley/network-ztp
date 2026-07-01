@@ -1,0 +1,2 @@
+FROM grafana/tempo:2.6.0
+COPY config/observability/tempo/tempo.yaml /etc/tempo.yaml

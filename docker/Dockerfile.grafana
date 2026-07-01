@@ -1,0 +1,4 @@
+FROM grafana/grafana:11.3.0
+COPY config/observability/grafana/provisioning/datasources.yaml /etc/grafana/provisioning/datasources/datasources.yaml
+COPY config/observability/grafana/provisioning/dashboards.yaml /etc/grafana/provisioning/dashboards/dashboards.yaml
+COPY config/observability/grafana/dashboards/ /var/lib/grafana/dashboards/

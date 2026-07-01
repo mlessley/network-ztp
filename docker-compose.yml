@@ -21,12 +21,18 @@ services:
       POSTGRES_USER: temporal
       POSTGRES_PWD: temporal
       POSTGRES_SEEDS: postgresql
+      PROMETHEUS_ENDPOINT: "0.0.0.0:8001"
     ports:
       - "7233:7233"
+      - "8001:8001"
+    dns:
+      - 127.0.0.11
     healthcheck:
-      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      test: ["CMD-SHELL", "nc -z \"$(hostname -i | awk '{print $1}')\" 7233 || exit 1"]
       interval: 10s
-      retries: 15
+      timeout: 5s
+      retries: 20
+      start_period: 90s
 
   temporal-ui:
     image: temporalio/ui:2.31.0
@@ -67,9 +73,9 @@ services:
       - "8000:8000"
 
   prometheus:
-    image: prom/prometheus:v2.55.0
-    volumes:
-      - ./config/observability/prometheus:/etc/prometheus
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.prometheus
     ports:
       - "9090:9090"
     command:
@@ -77,10 +83,10 @@ services:
       - "--storage.tsdb.path=/prometheus"
 
   tempo:
-    image: grafana/tempo:2.6.0
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
-    volumes:
-      - ./config/observability:/etc/tempo
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.tempo
+    command: ["-config.file=/etc/tempo.yaml"]
     ports:
       - "4317:4317"
       - "3200:3200"
@@ -92,15 +98,18 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
-    image: grafana/promtail:3.2.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.promtail
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./config/observability/promtail:/etc/promtail
     command: -config.file=/etc/promtail/config.yml
 
   grafana:
-    image: grafana/grafana:11.3.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.grafana
     depends_on:
       - prometheus
       - tempo
@@ -108,8 +117,5 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - ./config/observability/grafana/provisioning:/etc/grafana/provisioning
-      - ./config/observability/grafana/dashboards:/var/lib/grafana/dashboards
     ports:
       - "3000:3000"

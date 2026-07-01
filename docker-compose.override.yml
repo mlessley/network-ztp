@@ -3,19 +3,14 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-    volumes:
-      - ./api:/app/api
-      - ./temporal:/app/temporal
     command: ["uv", "run", "uvicorn", "api.main:create_app", "--factory",
-              "--host", "0.0.0.0", "--port", "8000", "--reload"]
+              "--host", "0.0.0.0", "--port", "8000"]
     environment:
       ZTP_USE_MOCK: "true"
       ZTP_ENV: development
       LOG_LEVEL: DEBUG
 
   ztp-worker:
-    volumes:
-      - ./temporal:/app/temporal
     environment:
       ZTP_USE_MOCK: "true"
       ZTP_ENV: development

@@ -1,0 +1,2 @@
+FROM grafana/promtail:3.2.0
+COPY config/observability/promtail/config.yml /etc/promtail/config.yml

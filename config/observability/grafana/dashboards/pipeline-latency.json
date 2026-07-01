@@ -7,7 +7,7 @@
       "type": "timeseries",
       "title": "Activity Latency by Type",
       "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
-      "targets": [{"expr": "histogram_quantile(0.95, rate(temporal_activity_execution_latency_seconds_bucket[5m]))", "legendFormat": "P95"}]
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, activity_type) (rate(temporal_activity_execution_latency_bucket[5m])))", "legendFormat": "{{activity_type}} P95"}]
     }
   ],
   "time": {"from": "now-3h", "to": "now"},

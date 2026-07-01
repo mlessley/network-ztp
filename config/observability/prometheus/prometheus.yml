@@ -15,4 +15,4 @@ scrape_configs:
       - targets: ["ztp-api:8000"]
   - job_name: temporal
     static_configs:
-      - targets: ["temporal:9090"]
+      - targets: ["temporal:8001"]
